@@ -1,0 +1,9 @@
+# Runtime app state (app HOME: obsidian.json, socket, Electron cache) — never commit
+runtime/
+.installed-obsidian
+# local plugin state
+config.json
+.toggle-0
+.toggle-1
+__pycache__/
+*.pyc

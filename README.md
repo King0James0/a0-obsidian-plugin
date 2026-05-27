@@ -1,0 +1,78 @@
+# Obsidian for Agent Zero
+
+Gives Agent Zero its own [Obsidian](https://obsidian.md/) vault. The plugin installs Obsidian, runs it on a virtual display, and exposes the official `obsidian` CLI so the agent can read, create, search, and organize markdown notes — daily notes, tasks, properties, backlinks — in a persistent, A0-owned vault. It also adds an **Obsidian** surface to the right-side Canvas so you can see the live app (graph view, editor) on demand.
+
+## What it can do
+
+- **Work with notes** (`obsidian-notes` skill) — read/create/append/search notes, append to the daily note, manage tasks, set properties/tags, follow backlinks, all via `obsidian-cli`.
+- **Keep a knowledge base** (`obsidian-vault-keeping` skill) — maintain a project-first vault (area folders, hub notes, dated session notes, `[[wikilinks]]`) and log work as it happens, rather than dropping flat notes.
+- **See the vault** (`obsidian-canvas-view` skill) — open the **Obsidian** icon in the right-side Canvas rail to view the real Obsidian GUI (graph view, editor, panes), not just the note text.
+
+On first run the plugin seeds a starting structure into the vault (`00-Index/`, `10-Projects/`, `20-Knowledge/`, `30-Research/`, `90-Archive/`, `Daily/`, a `Home` map, and daily-notes config). It's a sensible default — it never overwrites existing notes, and you can restructure however you like.
+
+## Setup
+
+1. **Install** via the Plugin Hub, a GitHub repo URL, or by uploading the plugin ZIP, then enable it.
+2. On first run the plugin downloads and installs Obsidian (~85 MB), seeds its config to open an A0-owned vault with the CLI enabled, and launches it headless. **Restart / re-enable** so it comes up.
+3. No API key, no manual config. Ask something like *"save a note about X"* or *"what's in my vault about Y?"* and the agent will use `obsidian-cli`.
+
+> Requires a Debian-based image (installs Obsidian via `.deb`), `Xvfb` (present in the standard A0 Docker image), and outbound network on first run.
+
+## How it works
+
+- Obsidian is an Electron desktop app with no headless build, so it runs under a virtual display (`Xvfb`). The CLI talks to that running instance over a unix socket.
+- Headless use is enabled by seeding `"cli": true` into Obsidian's `obsidian.json` and registering the vault as open — no GUI interaction needed.
+- A `/usr/local/bin/obsidian-cli` wrapper pins `HOME`/`XDG` so the agent's shell reaches the same socket the app opened.
+- The Obsidian app stays running (the CLI needs a live instance), so it holds a few hundred MB of RAM — similar to a headless browser.
+
+## Seeing the vault (Obsidian Canvas surface)
+
+The plugin adds its own **Obsidian** icon to Agent Zero's right-side **Canvas** rail (next to Browser, Desktop, and Editor). Click it to stream the **live Obsidian app** — graph view, editor, side panes — right in the canvas. Open Obsidian's graph view from its left ribbon to see your linked notes.
+
+- One Obsidian instance backs both the surface and `obsidian-cli`, so notes you create via the CLI show up live in the surface, and vice-versa.
+- The stream starts the first time you open the surface (a few seconds), and is reverse-proxied through Agent Zero — no extra ports are exposed.
+- Under the hood it's `xpra shadow --html=on` of Obsidian's display, registered with A0's built-in virtual-desktop gateway (the same machinery as the Desktop surface). Needs `xpra` + `xpra-html5` (present in the standard A0 Docker image).
+
+## Where your notes live
+
+The **vault is kept outside the plugin folder** (default `/a0/usr/obsidian`, on the persistent volume) so it **survives uninstall, reinstall, and updates**. Only Obsidian's app config/cache lives inside the plugin (and is cleaned up on uninstall).
+
+## Configuration
+
+`default_config.yaml`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `vault_path` | `/a0/usr/obsidian` | Vault location. Point at a mounted host vault to use an existing one. |
+| `obsidian_version` | `latest` | Obsidian version to install, or a pinned version like `1.12.7`. |
+| `expected_sha256` | `""` | Optional. Pin a version and set the `.deb` SHA-256 to verify the download (empty = HTTPS-only trust). |
+| `display` | `:121` | X display Obsidian runs on (one instance serves both the CLI and the Canvas surface). |
+| `xpra_port` | `14600` | Loopback TCP port for the Canvas surface's Xpra HTML5 stream (reverse-proxied by A0). |
+| `seed_structure` | `true` | Seed the starting folder structure + Home index on first run (never overwrites existing notes). |
+| `delete_vault_on_uninstall` | `false` | Safety. Leave false to keep your notes when uninstalling. |
+
+### Download integrity
+
+Obsidian doesn't publish a checksum file, so by default the plugin trusts **HTTPS from the official `obsidianmd` GitHub release** (and `apt`/`dpkg` verify the package's internal integrity). For stronger assurance, pin `obsidian_version` and set `expected_sha256` to that `.deb`'s hash — the plugin then verifies the download and refuses to install on mismatch.
+
+## Uninstalling
+
+Uninstall via the **Plugins UI**: it stops Obsidian, removes the `obsidian-cli` wrapper, and uninstalls Obsidian **only if this plugin installed it**. **Your vault is preserved** (it's your data) — set `delete_vault_on_uninstall: true` only if you really want it deleted.
+
+## Citing
+
+If you use this in your work, please cite it (use the **"Cite this repository"** button on GitHub, or):
+
+```bibtex
+@misc{a0obsidianplugin2026,
+  title        = {a0-obsidian-plugin: Obsidian vault for Agent Zero},
+  author       = {King0James0},
+  year         = {2026},
+  howpublished = {\url{https://github.com/King0James0/a0-obsidian-plugin}},
+  note         = {GitHub repository}
+}
+```
+
+## License
+
+MIT — see [LICENSE](LICENSE).

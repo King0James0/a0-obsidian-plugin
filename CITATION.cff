@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "a0-obsidian-plugin: Obsidian vault for Agent Zero"
+authors:
+  - name: "King0James0"
+type: software
+license: MIT
+repository-code: "https://github.com/King0James0/a0-obsidian-plugin"
+url: "https://github.com/King0James0/a0-obsidian-plugin"
+year: 2026

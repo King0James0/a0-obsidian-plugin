@@ -1,0 +1,32 @@
+<html>
+<head>
+  <script type="module">
+    import { store } from "/plugins/obsidian/webui/obsidian-store.js";
+  </script>
+  <style>
+    .obsidian-panel { position: absolute; inset: 0; display: flex; background: #1e1e1e; }
+    .obsidian-panel iframe { flex: 1; border: 0; width: 100%; height: 100%; }
+    .obsidian-status {
+      margin: auto; color: #b0b0b0; font: 14px/1.5 system-ui, sans-serif;
+      text-align: center; padding: 1.5rem; max-width: 32rem;
+    }
+  </style>
+</head>
+<body>
+  <div x-data>
+    <template x-if="$store.obsidian">
+      <div class="obsidian-panel"
+           x-create="$store.obsidian.onMount($el)"
+           x-destroy="$store.obsidian.cleanup()">
+        <template x-if="$store.obsidian.frameSrc">
+          <iframe :src="$store.obsidian.frameSrc" title="Obsidian"
+                  allow="clipboard-read; clipboard-write"></iframe>
+        </template>
+        <template x-if="!$store.obsidian.frameSrc">
+          <div class="obsidian-status" x-text="$store.obsidian.status"></div>
+        </template>
+      </div>
+    </template>
+  </div>
+</body>
+</html>

@@ -1,0 +1,11 @@
+<div
+  class="right-canvas-surface-panel obsidian-canvas-surface"
+  data-surface-id="obsidian"
+  :class="{
+    'is-active': $store.rightCanvas?.isSurfaceVisible('obsidian'),
+    'is-mounted': $store.rightCanvas?.isSurfaceRendered('obsidian')
+  }"
+  :aria-hidden="(!$store.rightCanvas?.isSurfaceVisible('obsidian')).toString()"
+>
+  <x-component path="/plugins/obsidian/webui/obsidian-panel.html" mode="canvas"></x-component>
+</div>

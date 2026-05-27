@@ -1,0 +1,39 @@
+# Obsidian plugin defaults. Override per-scope via the plugin config UI.
+#
+# Where the vault (your notes) lives. Kept OUTSIDE the plugin folder so it survives
+# uninstall/reinstall/update. Default is an A0-owned dir on the persistent volume.
+# Point this at a mounted host vault path if you want A0 to work on an existing vault.
+vault_path: ""            # empty -> /a0/usr/obsidian (resolved at runtime)
+
+# Obsidian version to install (.deb). "latest" resolves the newest release; or pin, e.g. "1.12.7".
+obsidian_version: latest
+
+# Optional download verification. Obsidian publishes no checksum, so by default the trust
+# anchor is HTTPS from the official obsidianmd GitHub release (+ apt/dpkg package integrity).
+# For stronger assurance, pin obsidian_version above and set the matching .deb SHA-256 here;
+# the plugin will then verify the download and refuse to install on mismatch. Empty = HTTPS-only.
+expected_sha256: ""
+
+# X display Obsidian runs on (one instance serves both obsidian-cli and the Canvas surface).
+# Keep distinct from A0's Desktop (:120) and the browser (:99).
+display: ":121"
+
+# CDP (Chrome DevTools Protocol) port Obsidian (Electron) exposes for the screencast bridge.
+cdp_port: 9222
+
+# Loopback TCP port the screencast bridge serves on (reverse-proxied through A0's /desktop
+# gateway). Change only if it collides with another service.
+bridge_port: 14600
+
+# Xvfb virtual screen size (WxH). Obsidian just needs a display to run; the streamed render size
+# is driven by CDP to match the canvas panel, so this size isn't user-visible.
+screen: "1280x800"
+
+# On first run, seed a starting folder structure (00-Index, 10-Projects, 20-Knowledge,
+# 30-Research, 90-Archive, Daily) + a Home index + daily-notes config into the vault. This is
+# a starting point — it never overwrites existing notes, and you can restructure freely.
+seed_structure: true
+
+# Safety: the vault is preserved on uninstall by default (it's your data). Set true only if
+# you really want uninstalling the plugin to DELETE all notes in the vault.
+delete_vault_on_uninstall: false
