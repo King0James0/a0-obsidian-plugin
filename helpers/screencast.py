@@ -106,19 +106,24 @@ function pt(ev){
 }
 function mods(ev){ return (ev.altKey?1:0)|(ev.ctrlKey?2:0)|(ev.metaKey?4:0)|(ev.shiftKey?8:0); }
 const BTN = {0:"left",1:"middle",2:"right"};
+const BMASK = {0:1,1:4,2:2};  // CDP `buttons` bitfield: left=1, right=2, middle=4
+let buttonsMask = 0;          // held buttons — REQUIRED on mouseMoved so DRAGS register (scrollbars)
 
 let lastMove = 0;
 img.addEventListener("mousemove", (ev) => {
-  const now = performance.now(); if (now - lastMove < 33) return; lastMove = now;
-  const p = pt(ev); send({type:"mouse", action:"mouseMoved", x:p.x, y:p.y, button:"none", modifiers:mods(ev)});
+  const now = performance.now();
+  if (!buttonsMask && now - lastMove < 33) return;  // throttle hover; never throttle a drag
+  lastMove = now;
+  const p = pt(ev);
+  send({type:"mouse", action:"mouseMoved", x:p.x, y:p.y, button:"none", buttons:buttonsMask, modifiers:mods(ev)});
 });
-img.addEventListener("mousedown", (ev) => { ev.preventDefault(); const p=pt(ev);
-  send({type:"mouse", action:"mousePressed", x:p.x, y:p.y, button:BTN[ev.button]||"left", clickCount:ev.detail||1, modifiers:mods(ev)}); });
-window.addEventListener("mouseup", (ev) => { const p=pt(ev);
-  send({type:"mouse", action:"mouseReleased", x:p.x, y:p.y, button:BTN[ev.button]||"left", clickCount:ev.detail||1, modifiers:mods(ev)}); });
+img.addEventListener("mousedown", (ev) => { ev.preventDefault(); buttonsMask |= (BMASK[ev.button]||1); const p=pt(ev);
+  send({type:"mouse", action:"mousePressed", x:p.x, y:p.y, button:BTN[ev.button]||"left", buttons:buttonsMask, clickCount:ev.detail||1, modifiers:mods(ev)}); });
+window.addEventListener("mouseup", (ev) => { buttonsMask &= ~(BMASK[ev.button]||1); const p=pt(ev);
+  send({type:"mouse", action:"mouseReleased", x:p.x, y:p.y, button:BTN[ev.button]||"left", buttons:buttonsMask, clickCount:ev.detail||1, modifiers:mods(ev)}); });
 img.addEventListener("contextmenu", (ev) => ev.preventDefault());
 img.addEventListener("wheel", (ev) => { ev.preventDefault(); const p=pt(ev);
-  send({type:"mouse", action:"mouseWheel", x:p.x, y:p.y, button:"none", deltaX:-ev.deltaX, deltaY:-ev.deltaY, modifiers:mods(ev)}); }, {passive:false});
+  send({type:"mouse", action:"mouseWheel", x:p.x, y:p.y, button:"none", deltaX:ev.deltaX, deltaY:ev.deltaY, modifiers:mods(ev)}); }, {passive:false});
 img.addEventListener("dblclick", (ev) => ev.preventDefault());
 img.tabIndex = 0;
 img.addEventListener("click", () => img.focus());
@@ -280,6 +285,7 @@ class Bridge:
         self.relaunch_spec = relaunch_spec       # path to setup.py's relaunch.json (watchdog)
         self._last_relaunch = 0.0
         self._loop = asyncio.get_event_loop()
+        self._input_q: asyncio.Queue = asyncio.Queue()
 
     # --- frame fan-out ---------------------------------------------------------------------
     def _on_frame(self, data: str, w: int, h: int) -> None:
@@ -393,7 +399,8 @@ class Bridge:
             if t == "mouse":
                 await cdp.call("Input.dispatchMouseEvent", {
                     "type": ev["action"], "x": ev["x"], "y": ev["y"],
-                    "button": ev.get("button", "none"), "clickCount": ev.get("clickCount", 0),
+                    "button": ev.get("button", "none"), "buttons": ev.get("buttons", 0),
+                    "clickCount": ev.get("clickCount", 0),
                     "deltaX": ev.get("deltaX", 0), "deltaY": ev.get("deltaY", 0),
                     "modifiers": ev.get("modifiers", 0),
                 }, timeout=5)
@@ -411,6 +418,36 @@ class Bridge:
             # a single failed/slow CDP call must never kill the client loop or the bridge
             pass
 
+    def enqueue_input(self, ev: dict) -> None:
+        """Hand an input event to the worker WITHOUT blocking the ws receive loop. Each CDP
+        Input.dispatch round-trip is ~tens of ms on a heavy page; awaiting them inline let a fast
+        wheel burst (incl. no-op over-scroll at the bottom) build a multi-second serial backlog,
+        so a direction reversal lagged until the backlog drained."""
+        self._input_q.put_nowait(ev)
+
+    async def input_worker(self) -> None:
+        """Dispatch queued input, coalescing consecutive high-frequency events so a burst can't
+        back up: wheel deltas SUM (down+up cancel → instant reversal); moves keep the latest
+        position. Discrete events (clicks/keys/resize) keep their order and are never merged."""
+        q = self._input_q
+        while True:
+            ev = await q.get()
+            while (ev.get("type") == "mouse" and ev.get("action") in ("mouseWheel", "mouseMoved")
+                   and not q.empty()):
+                try:
+                    nxt = q.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                if nxt.get("type") == "mouse" and nxt.get("action") == ev["action"]:
+                    if ev["action"] == "mouseWheel":  # carry summed scroll onto the latest event
+                        nxt["deltaX"] = ev.get("deltaX", 0) + nxt.get("deltaX", 0)
+                        nxt["deltaY"] = ev.get("deltaY", 0) + nxt.get("deltaY", 0)
+                    ev = nxt
+                else:  # not coalescable — flush what we have, then continue from nxt (order kept)
+                    await self.dispatch(ev)
+                    ev = nxt
+            await self.dispatch(ev)
+
 
 async def main() -> None:
     ap = argparse.ArgumentParser()
@@ -423,6 +460,7 @@ async def main() -> None:
     bridge = Bridge(args.cdp_port, relaunch_spec=args.relaunch_spec)
     asyncio.create_task(bridge.connect_loop())
     asyncio.create_task(bridge.keepalive())
+    asyncio.create_task(bridge.input_worker())
 
     async def index(_request):
         return web.Response(text=CLIENT_HTML, content_type="text/html")
@@ -448,7 +486,7 @@ async def main() -> None:
                     ev = json.loads(msg.data)
                 except Exception:
                     continue
-                await bridge.dispatch(ev)
+                bridge.enqueue_input(ev)
         finally:
             client.close()
             writer_task.cancel()
