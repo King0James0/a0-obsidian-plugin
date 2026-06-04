@@ -39,6 +39,14 @@ The plugin adds its own **Obsidian** icon to Agent Zero's right-side **Canvas** 
 - The stream starts the first time you open the surface (a few seconds), and is reverse-proxied through Agent Zero — no extra ports are exposed.
 - Under the hood it's `xpra shadow --html=on` of Obsidian's display, registered with A0's built-in virtual-desktop gateway (the same machinery as the Desktop surface). Needs `xpra` + `xpra-html5` (present in the standard A0 Docker image).
 
+## Opening notes from the A0 desktop
+
+Right-click a `.md` file on the Agent Zero desktop and choose **Open With Obsidian** (or launch **Obsidian** from the Applications menu) and it opens in the **Obsidian Canvas panel**, showing that note in your live vault.
+
+This is wired through a small launcher the plugin installs (`/usr/local/bin/obsidian-open`) — the system Obsidian launcher is repointed at it. The launcher hands the clicked file to the already-running vault instance (via `obsidian-cli`) and signals the web UI to open the Canvas panel. Files that live outside the vault (e.g. on the desktop) are linked into an `Inbox/` folder in the vault so Obsidian can open them; edits write back to the original.
+
+> Why a launcher? Obsidian is an Electron app that refuses to run as `root` without `--no-sandbox`, so the stock desktop entry silently crashes on the A0 desktop. The launcher avoids that by talking to the running instance instead of starting a new one — and the note shows in the Canvas panel, not as a separate desktop window. (Uninstalling restores the original desktop entry.)
+
 ## Where your notes live
 
 The **vault is kept outside the plugin folder** (default `/a0/usr/obsidian`, on the persistent volume) so it **survives uninstall, reinstall, and updates**. Only Obsidian's app config/cache lives inside the plugin (and is cleaned up on uninstall).

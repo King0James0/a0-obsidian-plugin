@@ -3,6 +3,34 @@
 // built-in _editor surface registration (importing the store + an open() handler is what
 // actually bootstraps the panel — the panel's x-create alone is not sufficient).
 import { store as obsidianStore } from "/plugins/obsidian/webui/obsidian-store.js";
+import { callJsonApi } from "/js/api.js";
+
+// Bridges the A0 desktop to the web UI: when the desktop "Open With Obsidian" launcher (or the
+// app-menu entry) fires, it drops a one-shot signal; this poller sees it and opens the Obsidian
+// Canvas panel (and re-asserts the clicked note). Without this, a desktop launch can't reach the
+// web UI to open the panel — they're separate worlds. Runs once per page (global guard).
+function startOpenSignalPoller(surfaces) {
+  if (globalThis.__a0ObsidianOpenPoller) return;
+  globalThis.__a0ObsidianOpenPoller = true;
+  let busy = false;
+  globalThis.setInterval(async () => {
+    if (busy) return;
+    busy = true;
+    try {
+      const res = await callJsonApi("/plugins/obsidian/obsidian_surface", { action: "poll_open" });
+      if (res && res.ok && res.open) {
+        await surfaces.open("obsidian");  // ensures the live instance + stream are up
+        if (res.path) {
+          try {
+            await callJsonApi("/plugins/obsidian/obsidian_surface", { action: "open_note", path: res.path });
+          } catch { /* best-effort: launcher already opened it in the warm case */ }
+        }
+      }
+    } catch { /* transient API error — try again next tick */ } finally {
+      busy = false;
+    }
+  }, 2000);
+}
 
 function waitForElement(selector, timeoutMs = 10000) {
   const found = document.querySelector(selector);
@@ -38,4 +66,5 @@ export default async function registerObsidianSurface(surfaces) {
       obsidianStore.cleanup?.();
     },
   });
+  startOpenSignalPoller(surfaces);
 }

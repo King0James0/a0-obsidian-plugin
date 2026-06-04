@@ -21,6 +21,14 @@ class ObsidianSurface(ApiHandler):
         if action == "close":
             setup.stop_surface_session(cfg)
             return {"ok": True, "closed": True}
+        if action == "poll_open":
+            # Web-UI poll: is a desktop "Open With Obsidian" launch pending? (one-shot)
+            sig = setup.consume_open_signal()
+            return {"ok": True, "open": bool(sig), "path": (sig or {}).get("path", "")}
+        if action == "open_note":
+            # Re-assert the clicked note in the running instance (covers a cold-start panel open).
+            ok = setup.open_note_in_vault(str(input.get("path") or ""))
+            return {"ok": ok}
         try:
             url = setup.start_surface_session(cfg)
         except Exception as e:
