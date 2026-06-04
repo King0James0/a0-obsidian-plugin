@@ -40,6 +40,8 @@ CLIENT_HTML = """<!doctype html>
 </style></head>
 <body>
   <div id="wrap"><img id="screen" draggable="false" alt=""></div>
+  <textarea id="pastebuf" aria-hidden="true" tabindex="-1"
+    style="position:fixed;left:-9999px;top:0;width:10px;height:10px;opacity:0"></textarea>
   <div id="msg"></div>
 <script>
 const img = document.getElementById("screen");
@@ -54,9 +56,13 @@ let ws = null, natW = 0, natH = 0, gotFrame = false, retry = 0;
 function showMsg(t){ msgEl.textContent = t; msgEl.style.display = t ? "block" : "none"; }
 function send(o){ if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
 
-// Frames arrive as a BINARY length-prefixed byte stream (the /desktop gateway proxy splits/merges
-// large messages, so we reassemble by length prefix, not by message boundaries):
-//   [u32 bodyLen][body]   where body = [u32 width][u32 height][jpeg bytes]
+// Server->client messages arrive as a BINARY length-prefixed byte stream (the /desktop gateway
+// proxy splits/merges large messages, so we reassemble by length prefix, not by message
+// boundaries). A 1-byte type tag rides on the channel that's already proven to traverse the
+// gateway (we deliberately avoid server->client TEXT frames, which the gateway may not forward):
+//   [u32 bodyLen][u8 type][...]
+//     type 0 (frame):     [u32 width][u32 height][jpeg bytes]
+//     type 1 (clipboard): [utf-8 text]   -- a copy/cut happened in the remote Obsidian
 let buf = new Uint8Array(0), lastUrl = null;
 function append(chunk){
   const n = new Uint8Array(buf.length + chunk.length);
@@ -68,18 +74,48 @@ function drain(){
     const bodyLen = dv().getUint32(0);
     if (buf.length < 4 + bodyLen) break;
     const body = buf.subarray(4, 4 + bodyLen);
-    const bdv = new DataView(body.buffer, body.byteOffset, body.byteLength);
-    natW = bdv.getUint32(0); natH = bdv.getUint32(4);
-    const jpeg = body.subarray(8);
-    const url = URL.createObjectURL(new Blob([jpeg], {type:"image/jpeg"}));
-    img.src = url;
-    if (lastUrl) URL.revokeObjectURL(lastUrl);
-    lastUrl = url;
-    gotFrame = true; showMsg("");
+    const type = body[0];
+    if (type === 1){
+      // remote clipboard -> push to the local (Windows) clipboard
+      writeLocalClipboard(new TextDecoder().decode(body.subarray(1)));
+    } else {
+      const bdv = new DataView(body.buffer, body.byteOffset + 1, body.byteLength - 1);
+      natW = bdv.getUint32(0); natH = bdv.getUint32(4);
+      const jpeg = body.subarray(9);
+      const url = URL.createObjectURL(new Blob([jpeg], {type:"image/jpeg"}));
+      img.src = url;
+      if (lastUrl) URL.revokeObjectURL(lastUrl);
+      lastUrl = url;
+      gotFrame = true; showMsg("");
+    }
     buf = buf.subarray(4 + bodyLen);
   }
   // compact so the backing buffer doesn't grow unbounded
   if (buf.byteOffset > 0) buf = buf.slice();
+}
+
+// Write text to the LOCAL clipboard. Prefer the async Clipboard API (needs a secure context:
+// https or localhost); fall back to a hidden-textarea execCommand("copy") so it also works when
+// the A0 web UI is served over plain http on the LAN. The remote Ctrl+C is the user activation
+// that authorizes this, and the relay round-trip is fast enough to stay inside its window.
+async function writeLocalClipboard(text){
+  if (!text) return;
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+  } catch(e){ /* fall through to legacy path */ }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;left:-9999px;top:0;opacity:0";
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    img.focus();
+  } catch(e){}
 }
 
 function connect(){
@@ -128,7 +164,25 @@ img.addEventListener("dblclick", (ev) => ev.preventDefault());
 img.tabIndex = 0;
 img.addEventListener("click", () => img.focus());
 
+const pasteBuf = document.getElementById("pastebuf");
+// Paste (local Windows clipboard -> remote Obsidian): let the browser's NATIVE paste drop the
+// local clipboard into a hidden textarea (works without the Clipboard API / secure context), then
+// relay the captured text to the remote and insert it there. We must NOT forward this Ctrl/Cmd+V
+// to the remote (that would paste the remote's own, stale clipboard instead).
+pasteBuf.addEventListener("paste", (ev) => {
+  const text = ((ev.clipboardData || window.clipboardData) || {}).getData
+    ? (ev.clipboardData || window.clipboardData).getData("text") : "";
+  if (text) send({type:"paste", text});
+  setTimeout(() => { pasteBuf.value = ""; img.focus(); }, 0);
+});
+pasteBuf.addEventListener("blur", () => { pasteBuf.value = ""; });
+
 window.addEventListener("keydown", (ev) => {
+  if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && (ev.key === "v" || ev.key === "V")){
+    pasteBuf.value = "";
+    pasteBuf.focus();   // redirect the imminent native paste into the hidden textarea
+    return;             // don't send to remote, don't preventDefault (let the paste fire)
+  }
   send({type:"key", action:"keyDown", key:ev.key, code:ev.code, keyCode:ev.keyCode, modifiers:mods(ev),
         text: (ev.key.length === 1 && !ev.ctrlKey && !ev.metaKey) ? ev.key : ""});
   if (!ev.metaKey && !ev.ctrlKey) ev.preventDefault();
@@ -158,7 +212,8 @@ class CDP:
         self.ws = ws
         self._id = 0
         self._pending: dict[int, asyncio.Future] = {}
-        self.on_frame = None  # callable(data_b64, width, height)
+        self.on_frame = None    # callable(data_b64, width, height)
+        self.on_binding = None  # callable(name, payload) — Runtime.bindingCalled (clipboard)
         self.closed = asyncio.Event()
 
     async def call(self, method: str, params: dict | None = None, timeout: float = 8) -> dict:
@@ -193,6 +248,10 @@ class CDP:
                     if self.on_frame:
                         md = p.get("metadata", {})
                         self.on_frame(p["data"], int(md.get("deviceWidth", 0)), int(md.get("deviceHeight", 0)))
+                elif msg.get("method") == "Runtime.bindingCalled":
+                    p = msg.get("params", {})
+                    if self.on_binding:
+                        self.on_binding(p.get("name"), p.get("payload"))
         except Exception:
             pass
         finally:
@@ -207,6 +266,16 @@ class CDP:
         await self.call("Page.startScreencast", {
             "format": "jpeg", "quality": 70, "maxWidth": max_w, "maxHeight": max_h, "everyNthFrame": 1,
         })
+
+    async def enable_clipboard_relay(self) -> None:
+        """Wire up remote-copy -> client relay. A CDP Runtime binding (window.__a0clip) lets page
+        JS push back to us; a capture-phase copy/cut listener grabs the current selection at copy
+        time and hands it over. Installed on every (re)connect and on every future document so it
+        survives Obsidian reloads."""
+        await self.call("Runtime.enable")
+        await self.call("Runtime.addBinding", {"name": "__a0clip"})
+        await self.call("Page.addScriptToEvaluateOnNewDocument", {"source": _CLIP_RELAY_JS})
+        await self.call("Runtime.evaluate", {"expression": _CLIP_RELAY_JS})
 
     async def set_window_size(self, width: int, height: int) -> None:
         # Electron's Browser.getWindowForTarget returns no windowId, so resize the *render viewport*
@@ -225,6 +294,7 @@ class Client:
     def __init__(self, ws: web.WebSocketResponse) -> None:
         self.ws = ws
         self._latest: bytes | None = None
+        self._aux: list[bytes] = []   # clipboard records — queued, NEVER dropped
         self._wake = asyncio.Event()
         self._closed = False
 
@@ -232,15 +302,20 @@ class Client:
         self._latest = payload  # replace, don't queue — old frames are worthless
         self._wake.set()
 
+    def offer_aux(self, record: bytes) -> None:
+        self._aux.append(record)  # clipboard etc. — must not be dropped or coalesced
+        self._wake.set()
+
     async def writer(self) -> None:
         try:
             while not self._closed:
                 await self._wake.wait()
                 self._wake.clear()
+                while self._aux:                       # flush queued records first (never lost)
+                    await self.ws.send_bytes(self._aux.pop(0))
                 payload, self._latest = self._latest, None
-                if payload is None:
-                    continue
-                await self.ws.send_bytes(payload)  # backpressure lives HERE, single-flight
+                if payload is not None:
+                    await self.ws.send_bytes(payload)  # backpressure lives HERE, single-flight
         except Exception:
             pass
 
@@ -257,6 +332,17 @@ _HIDE_CHROME_JS = (
     "if(!s){s=document.createElement('style');s.id=id;"
     "(document.head||document.documentElement).appendChild(s);}"
     "s.textContent='.titlebar-button-container.mod-right{display:none !important;}';})();"
+)
+
+# Installed in the remote Obsidian page: on copy/cut, grab the current selection and hand it to the
+# bridge via the Runtime binding (read AFTER the event so the app's own copy handler has run). The
+# bridge relays it down to the viewer, which writes it to the local clipboard.
+_CLIP_RELAY_JS = (
+    "(function(){if(window.__a0clipHook)return;window.__a0clipHook=true;"
+    "function grab(){try{var t=(window.getSelection&&window.getSelection().toString())||'';"
+    "if(t&&window.__a0clip)window.__a0clip(t);}catch(e){}}"
+    "document.addEventListener('copy',function(){setTimeout(grab,0);},true);"
+    "document.addEventListener('cut',function(){setTimeout(grab,0);},true);})();"
 )
 
 
@@ -293,12 +379,23 @@ class Bridge:
         # large WS messages and forwards each fragment as a whole message) can't corrupt it — the
         # client reassembles by length prefix:  [u32 bodyLen][u32 w][u32 h][jpeg]
         jpeg = base64.b64decode(data)
-        body = struct.pack(">II", w, h) + jpeg
+        body = b"\x00" + struct.pack(">II", w, h) + jpeg  # type 0 = frame
         payload = struct.pack(">I", len(body)) + body
         self.last_frame = payload
         self.last_frame_ts = self._loop.time()
         for c in list(self.clients):
             c.offer(payload)  # each client's writer sends the latest, drops stale
+
+    def _on_clipboard(self, name: str | None, payload) -> None:
+        """A copy/cut happened in the remote Obsidian — relay the text to every viewer so it lands
+        on their local clipboard. Sent as a tagged binary record (type 1) on the frame channel so
+        it can't be dropped/coalesced like frames and rides the gateway-proven path."""
+        if name != "__a0clip" or not payload:
+            return
+        body = b"\x01" + str(payload).encode("utf-8")[:2_000_000]  # type 1 = clipboard
+        record = struct.pack(">I", len(body)) + body
+        for c in list(self.clients):
+            c.offer_aux(record)
 
     # --- CDP supervision -------------------------------------------------------------------
     def _ensure_app_alive(self) -> None:
@@ -355,6 +452,7 @@ class Bridge:
                 continue
             cdp = CDP(cdp_ws)
             cdp.on_frame = self._on_frame
+            cdp.on_binding = self._on_clipboard
             self.cdp = cdp
             reader_task = asyncio.create_task(cdp.reader())
             try:
@@ -362,6 +460,7 @@ class Bridge:
                 # hide window controls now + on any future reload of this page
                 await cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": _HIDE_CHROME_JS})
                 await cdp.call("Runtime.evaluate", {"expression": _HIDE_CHROME_JS})
+                await cdp.enable_clipboard_relay()  # remote copy -> local clipboard relay
                 if self.size:  # a fresh page session loses the prior Emulation override
                     await cdp.set_window_size(*self.size)
                 await cdp.start_screencast()
@@ -410,6 +509,10 @@ class Bridge:
                 if ev.get("text"):
                     p["text"] = ev["text"]
                 await cdp.call("Input.dispatchKeyEvent", p, timeout=5)
+            elif t == "paste":
+                txt = ev.get("text") or ""
+                if txt:
+                    await cdp.call("Input.insertText", {"text": txt}, timeout=5)
             elif t == "resize":
                 w, h = int(ev["width"]), int(ev["height"])
                 self.size = (w, h)

@@ -36,6 +36,7 @@ On first run the plugin seeds a starting structure into the vault (`00-Index/`, 
 The plugin adds its own **Obsidian** icon to Agent Zero's right-side **Canvas** rail (next to Browser, Desktop, and Editor). Click it to stream the **live Obsidian app** — graph view, editor, side panes — right in the canvas. Open Obsidian's graph view from its left ribbon to see your linked notes.
 
 - One Obsidian instance backs both the surface and `obsidian-cli`, so notes you create via the CLI show up live in the surface, and vice-versa.
+- **Copy & paste with your own machine.** Select text in the surface and press `Ctrl/Cmd+C` — it lands on *your* local clipboard, so you can paste it into any app on your computer (Windows, macOS, Linux). `Ctrl/Cmd+V` goes the other way: it pastes your local clipboard into the note. The surface is a live screencast of the remote app, so the plugin bridges the clipboard across it for you. (Copying lands on the local clipboard via the async Clipboard API on `https`/`localhost`, falling back to a legacy path when the UI is served over plain `http` on a LAN.)
 - The stream starts the first time you open the surface (a few seconds), and is reverse-proxied through Agent Zero — no extra ports are exposed.
 - Under the hood it's `xpra shadow --html=on` of Obsidian's display, registered with A0's built-in virtual-desktop gateway (the same machinery as the Desktop surface). Needs `xpra` + `xpra-html5` (present in the standard A0 Docker image).
 
