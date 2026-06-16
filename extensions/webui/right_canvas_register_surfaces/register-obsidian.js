@@ -14,7 +14,10 @@ function startOpenSignalPoller(surfaces) {
   globalThis.__a0ObsidianOpenPoller = true;
   let busy = false;
   globalThis.setInterval(async () => {
-    if (busy) return;
+    // Skip while the tab is hidden/backgrounded: a UI that isn't on screen has no reason to watch
+    // for a desktop "Open With Obsidian" click, and each poll POST otherwise leaks an event-loop
+    // socketpair in the framework's async API dispatch — a long-lived idle tab would exhaust fds.
+    if (busy || document.visibilityState !== "visible") return;
     busy = true;
     try {
       const res = await callJsonApi("/plugins/obsidian/obsidian_surface", { action: "poll_open" });
