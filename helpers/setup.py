@@ -153,9 +153,13 @@ def _cdp_port(cfg: dict | None = None) -> int:
 
 
 def _app_env(cfg: dict, display: str | None = None) -> dict:
+    """Build environment for Obsidian process, using allowlist of safe variables."""
     rt = _runtime_dir()
+    # Allowlist of environment variables to pass through (excludes unrelated secrets/credentials).
+    safe_env_keys = {"PATH", "LANG", "LANGUAGE", "LC_ALL", "TZ", "USER", "LOGNAME"}
+    safe_env = {k: v for k, v in os.environ.items() if k in safe_env_keys}
     return {
-        **os.environ,
+        **safe_env,
         "HOME": rt,
         "XDG_CONFIG_HOME": os.path.join(rt, ".config"),
         "XDG_RUNTIME_DIR": os.path.join(rt, "run"),
@@ -382,9 +386,9 @@ _LAUNCHER_TMPL = '''#!/opt/venv-a0/bin/python3
 # the .deb's launcher (which crashes as root: Electron needs --no-sandbox).
 import json, os, subprocess, sys, time
 
-VAULT = "__VAULT__"
-SIGNAL = "__SIGNAL__"
-CLI = "__CLI__"
+VAULT = __VAULT__
+SIGNAL = __SIGNAL__
+CLI = __CLI__
 INBOX = "Inbox"
 
 
@@ -437,9 +441,9 @@ if __name__ == "__main__":
 
 def _render_launcher(cfg: dict) -> str:
     rendered = (_LAUNCHER_TMPL
-                .replace("__VAULT__", _vault_path(cfg))
-                .replace("__SIGNAL__", _signal_file())
-                .replace("__CLI__", WRAPPER_PATH))
+                .replace("__VAULT__", repr(_vault_path(cfg)))
+                .replace("__SIGNAL__", repr(_signal_file()))
+                .replace("__CLI__", repr(WRAPPER_PATH)))
     # Force LF: a CRLF in the source file would otherwise break the script's `#!` shebang on Linux.
     return rendered.replace("\r\n", "\n").replace("\r", "\n")
 
