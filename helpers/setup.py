@@ -191,15 +191,60 @@ def _resolve_version(cfg: dict) -> str | None:
         return None
 
 
-def ensure_obsidian_installed(cfg: dict) -> bool:
-    if os.path.exists(OBS_APP_BIN):
-        return True
-    if not shutil.which("apt-get"):
-        _log("apt-get not found — this plugin requires a Debian-based A0 image")
+def _host_arch() -> str:
+    """Return the dpkg architecture (amd64 or arm64/aarch64)."""
+    try:
+        out = subprocess.run(["dpkg", "--print-architecture"], capture_output=True, text=True, timeout=10)
+        arch = out.stdout.strip()
+        if arch:
+            return arch
+    except Exception:
+        pass
+    import platform
+    m = platform.machine().lower()
+    if m in ("aarch64", "arm64"):
+        return "arm64"
+    return "amd64"
+
+
+def _install_tarball(ver: str, cfg: dict) -> bool:
+    """Install Obsidian from the arm64 tar.gz (no .deb published for arm64).
+    Downloads obsidian-{ver}-arm64.tar.gz, extracts to /opt/Obsidian/."""
+    url = (
+        "https://github.com/obsidianmd/obsidian-releases/releases/download/"
+        f"v{ver}/obsidian-{ver}-arm64.tar.gz"
+    )
+    tarball = "/tmp/obsidian_install.tar.gz"
+    try:
+        _log(f"downloading Obsidian {ver} arm64 tarball (~190MB)...")
+        req = urllib.request.Request(url, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=300) as r, open(tarball, "wb") as f:
+            shutil.copyfileobj(r, f)
+        _log(f"extracting to /opt/Obsidian/ ...")
+        os.makedirs("/opt/Obsidian", exist_ok=True)
+        subprocess.run(
+            ["tar", "xzf", tarball, "-C", "/opt/Obsidian", "--strip-components=1"],
+            capture_output=True, timeout=120,
+        )
+        for bin_name in ("obsidian", "obsidian-cli"):
+            p = os.path.join("/opt/Obsidian", bin_name)
+            if os.path.exists(p):
+                os.chmod(p, 0o755)
+        if not os.path.exists(OBS_APP):
+            os.symlink(OBS_APP_BIN, OBS_APP)
+    except Exception as e:
+        _log(f"Obsidian tarball install error: {e}")
         return False
-    ver = _resolve_version(cfg)
-    if not ver:
-        return False
+    finally:
+        try:
+            os.remove(tarball)
+        except Exception:
+            pass
+    return os.path.exists(OBS_APP_BIN)
+
+
+def _install_deb(ver: str, cfg: dict) -> bool:
+    """Install Obsidian from the amd64 .deb package."""
     url = (
         "https://github.com/obsidianmd/obsidian-releases/releases/download/"
         f"v{ver}/obsidian_{ver}_amd64.deb"
@@ -210,9 +255,6 @@ def ensure_obsidian_installed(cfg: dict) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=300) as r, open(deb, "wb") as f:
             shutil.copyfileobj(r, f)
-        # Integrity: Obsidian publishes no checksum, so the trust anchor is HTTPS + the official
-        # obsidianmd release (apt/dpkg also checks package integrity). If the user pinned an
-        # expected_sha256, verify it and refuse to install on mismatch.
         expected = str(cfg.get("expected_sha256", "")).strip().lower()
         if expected:
             h = hashlib.sha256()
@@ -241,7 +283,24 @@ def ensure_obsidian_installed(cfg: dict) -> bool:
             os.remove(deb)
         except Exception:
             pass
-    ok = os.path.exists(OBS_APP_BIN)
+    return os.path.exists(OBS_APP_BIN)
+
+
+def ensure_obsidian_installed(cfg: dict) -> bool:
+    if os.path.exists(OBS_APP_BIN):
+        return True
+    if not shutil.which("apt-get"):
+        _log("apt-get not found — this plugin requires a Debian-based A0 image")
+        return False
+    ver = _resolve_version(cfg)
+    if not ver:
+        return False
+    arch = _host_arch()
+    if arch in ("arm64", "aarch64"):
+        _log(f"arm64 architecture detected — using tar.gz install path")
+        ok = _install_tarball(ver, cfg)
+    else:
+        ok = _install_deb(ver, cfg)
     if ok:
         try:
             open(os.path.join(_plugin_dir(), INSTALL_MARKER), "w").write(
