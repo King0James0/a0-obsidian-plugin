@@ -207,6 +207,25 @@ def _host_arch() -> str:
     return "amd64"
 
 
+def _verify_sha256(path: str, cfg: dict, label: str) -> bool:
+    """If the user pinned expected_sha256, verify the download against it before install.
+    Returns True to proceed (verified, or no pin configured), False to refuse."""
+    expected = str(cfg.get("expected_sha256", "")).strip().lower()
+    if not expected:
+        _log("no expected_sha256 set; trusting HTTPS from the official obsidianmd GitHub release.")
+        return True
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    got = h.hexdigest()
+    if got != expected:
+        _log(f"SHA-256 mismatch (expected {expected[:12]}…, got {got[:12]}…) — refusing to install")
+        return False
+    _log(f"Obsidian {label} SHA-256 verified.")
+    return True
+
+
 def _install_tarball(ver: str, cfg: dict) -> bool:
     """Install Obsidian from the arm64 tar.gz (no .deb published for arm64).
     Downloads obsidian-{ver}-arm64.tar.gz, extracts to /opt/Obsidian/."""
@@ -220,12 +239,17 @@ def _install_tarball(ver: str, cfg: dict) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=300) as r, open(tarball, "wb") as f:
             shutil.copyfileobj(r, f)
-        _log(f"extracting to /opt/Obsidian/ ...")
+        if not _verify_sha256(tarball, cfg, "arm64 tar.gz"):
+            return False
+        _log("extracting to /opt/Obsidian/ ...")
         os.makedirs("/opt/Obsidian", exist_ok=True)
-        subprocess.run(
+        res = subprocess.run(
             ["tar", "xzf", tarball, "-C", "/opt/Obsidian", "--strip-components=1"],
-            capture_output=True, timeout=120,
+            capture_output=True, text=True, timeout=120,
         )
+        if res.returncode != 0:
+            _log("tar extraction failed: " + (res.stderr or res.stdout or "")[-300:])
+            return False
         for bin_name in ("obsidian", "obsidian-cli"):
             p = os.path.join("/opt/Obsidian", bin_name)
             if os.path.exists(p):
@@ -255,19 +279,8 @@ def _install_deb(ver: str, cfg: dict) -> bool:
         req = urllib.request.Request(url, headers={"User-Agent": _UA})
         with urllib.request.urlopen(req, timeout=300) as r, open(deb, "wb") as f:
             shutil.copyfileobj(r, f)
-        expected = str(cfg.get("expected_sha256", "")).strip().lower()
-        if expected:
-            h = hashlib.sha256()
-            with open(deb, "rb") as f:
-                for chunk in iter(lambda: f.read(1 << 20), b""):
-                    h.update(chunk)
-            got = h.hexdigest()
-            if got != expected:
-                _log(f"SHA-256 mismatch (expected {expected[:12]}…, got {got[:12]}…) — refusing to install")
-                return False
-            _log("Obsidian .deb SHA-256 verified.")
-        else:
-            _log("no expected_sha256 set; trusting HTTPS from the official obsidianmd GitHub release.")
+        if not _verify_sha256(deb, cfg, ".deb"):
+            return False
         subprocess.run(["apt-get", "update", "-qq"], capture_output=True, timeout=300)
         res = subprocess.run(
             ["apt-get", "install", "-y", deb],
