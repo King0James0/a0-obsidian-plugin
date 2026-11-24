@@ -15,6 +15,31 @@
       text-align: center; padding: 1.5rem; max-width: 32rem;
     }
 
+    /* --- "Pop out to new window" control -----------------------------------------------------
+       Mirrors the Task Manager's #btn-popout (↗, btn-ghost, top-right of the surface). The
+       streamed Obsidian page has no header of our own, so the button floats over the iframe in
+       the panel's top-right corner. Only rendered when a stream URL exists and we are not
+       already inside a popped window. */
+    .obsidian-popout {
+      position: absolute; top: 6px; right: 6px; z-index: 5;
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 28px; height: 28px; padding: 0;
+      font: 16px/1 system-ui, sans-serif; color: #e6e6e6;
+      background: rgba(38, 38, 41, 0.82); border: 1px solid rgba(217, 218, 222, 0.28);
+      border-radius: 6px; cursor: pointer; opacity: 0.72;
+      transition: opacity 120ms ease, background 120ms ease;
+    }
+    .obsidian-popout:hover { opacity: 1; background: rgba(38, 38, 41, 0.96); }
+    .obsidian-popout:focus-visible { outline: 2px solid #f7bf1a; outline-offset: 1px; }
+
+    .obsidian-status .obsidian-restore {
+      display: inline-block; margin-top: 0.75rem; padding: 5px 12px;
+      font: 500 13px/1.4 system-ui, sans-serif; color: #e6e6e6;
+      background: rgba(38, 38, 41, 0.9); border: 1px solid rgba(217, 218, 222, 0.3);
+      border-radius: 6px; cursor: pointer;
+    }
+    .obsidian-status .obsidian-restore:hover { background: rgba(38, 38, 41, 1); }
+
     /* --- "Open as window" (floating modal) -------------------------------------------------
        In docked mode the panel fills the rail (position:absolute;inset:0 against the docked
        container). When floated, the modal-inner has NO intrinsic size, and our absolute panel
@@ -63,11 +88,26 @@
       <div class="obsidian-panel"
            x-create="$store.obsidian.onMount($el)"
            x-destroy="$store.obsidian.cleanup()">
-        <template x-if="$store.obsidian.frameSrc">
+        <!-- Docked viewer. Unmounted while popped out so two viewers never drive one CDP page. -->
+        <template x-if="$store.obsidian.frameSrc && !$store.obsidian.poppedOut">
           <iframe :src="$store.obsidian.frameSrc" title="Obsidian"
                   allow="clipboard-read; clipboard-write"></iframe>
         </template>
-        <template x-if="!$store.obsidian.frameSrc">
+        <template x-if="$store.obsidian.frameSrc && !$store.obsidian.poppedOut && !$store.obsidian.isEmbedded">
+          <button type="button" class="obsidian-popout"
+                  title="Open in new window"
+                  aria-label="Open Obsidian in a new window"
+                  @click="$store.obsidian.popOut()">↗</button>
+        </template>
+        <!-- Popped out: the live view is the popup window; offer an explicit restore here too. -->
+        <template x-if="$store.obsidian.poppedOut">
+          <div class="obsidian-status">
+            <div>Obsidian popped out to a new window.</div>
+            <button type="button" class="obsidian-restore"
+                    @click="$store.obsidian.restoreFromPopout(true)">Bring back here</button>
+          </div>
+        </template>
+        <template x-if="!$store.obsidian.frameSrc && !$store.obsidian.poppedOut">
           <div class="obsidian-status" x-text="$store.obsidian.status"></div>
         </template>
       </div>
